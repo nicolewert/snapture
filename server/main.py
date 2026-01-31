@@ -18,6 +18,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from gemini_client import GeminiLiveClient
+from moment_detector import MomentDetector
 
 # Load environment variables
 load_dotenv()
@@ -64,6 +65,7 @@ class ClientSession:
         self.session_id = session_id
         self.websocket = websocket
         self.gemini_client: GeminiLiveClient | None = None
+        self.detector = MomentDetector()
         self._connected = True
 
     async def setup_gemini(self, model: str = "gemini-2.5-flash-native-audio-latest"):
@@ -87,6 +89,14 @@ class ClientSession:
             )
             self.gemini_client.on_turn_complete = lambda: asyncio.create_task(
                 self.send_turn_complete()
+            )
+            
+            # Tool Callbacks
+            self.gemini_client.on_bookmark = lambda label, confidence: asyncio.create_task(
+                self.send_bookmark(label, confidence)
+            )
+            self.gemini_client.on_overlay = lambda text, kind, duration: asyncio.create_task(
+                self.send_overlay(text, kind, duration)
             )
 
             await self.gemini_client.connect()
@@ -113,8 +123,26 @@ class ClientSession:
                 await self.gemini_client.send_audio(message.get("data", ""))
 
         elif msg_type == "video":
+            video_data = message.get("data", "")
+            
+            # 1. Process with MomentDetector
+            # We run this synchronously for now as MediaPipe is CPU bound; 
+            # in production might want to offload to thread pool
+            signals = self.detector.process_frame(video_data)
+            
+            # Check signals for triggers
+            if signals:
+                # Log occasional signals
+                if signals.get("smile_score", 0) > 60: # Threshold depends on the raw metric we chose
+                    logger.info(f"Smile detected: {signals['smile_score']}")
+                
+                # Rule-based overlay trigger example
+                # if signals.get("energy_score", 0) > 50:
+                    # await self.send_overlay("High Energy!", "praise", 2.0)
+
+            # 2. Send to Gemini
             if self.gemini_client:
-                await self.gemini_client.send_video(message.get("data", ""))
+                await self.gemini_client.send_video(video_data)
 
         elif msg_type == "end":
             await self.cleanup()
@@ -141,6 +169,25 @@ class ClientSession:
     async def send_turn_complete(self):
         """Notify client that model turn is complete."""
         await self._send({"type": "turnComplete"})
+        
+    async def send_bookmark(self, label: str, confidence: float):
+        """Notify client of a bookmark."""
+        logger.info(f"Sending bookmark: {label}")
+        await self._send({
+            "type": "bookmark", 
+            "label": label, 
+            "confidence": confidence
+        })
+
+    async def send_overlay(self, text: str, kind: str, duration: float):
+        """Notify client to show overlay."""
+        logger.info(f"Sending overlay: {text}")
+        await self._send({
+            "type": "overlay", 
+            "text": text, 
+            "kind": kind,
+            "duration": duration
+        })
 
     async def send_error(self, message: str):
         """Send error message to client."""
