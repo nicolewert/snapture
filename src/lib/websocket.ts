@@ -6,6 +6,10 @@ export type ClientMessage =
     | { type: 'setup'; config: { model: string } }
     | { type: 'audio'; data: string }
     | { type: 'video'; data: string }
+    | { type: 'start_recording' }
+    | { type: 'stop_recording' }
+    | { type: 'start_clip' }
+    | { type: 'stop_clip' }
     | { type: 'end' }
 
 export type ServerMessage =
@@ -15,6 +19,7 @@ export type ServerMessage =
     | { type: 'interrupted' }
     | { type: 'error'; message: string }
     | { type: 'turnComplete' }
+    | { type: 'clip'; url: string; context: string }
 
 type MessageHandler = (message: ServerMessage) => void
 type StateHandler = (state: ConnectionState) => void
@@ -115,6 +120,22 @@ export class WebSocketClient {
 
     sendVideo(base64Data: string) {
         this.send({ type: 'video', data: base64Data })
+    }
+
+    sendStartRecording() {
+        this.send({ type: 'start_recording' })
+    }
+
+    sendStopRecording() {
+        this.send({ type: 'stop_recording' })
+    }
+
+    sendStartClip() {
+        this.send({ type: 'start_clip' })
+    }
+
+    sendStopClip() {
+        this.send({ type: 'stop_clip' })
     }
 
     onMessage(handler: MessageHandler): () => void {

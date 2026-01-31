@@ -6,8 +6,11 @@ import { MediaCapture, AudioPlayer } from '../lib/media'
 export function useSnapture() {
     const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
     const [isStreaming, setIsStreaming] = useState(false)
+    const [isClipping, setIsClipping] = useState(false)
     const [lastMessage, setLastMessage] = useState<ServerMessage | null>(null)
     const [transcript, setTranscript] = useState<string[]>([])
+
+    const [clips, setClips] = useState<{ url: string; context: string; timestamp: number }[]>([])
 
     const mediaCapture = useRef<MediaCapture>(new MediaCapture())
     const audioPlayer = useRef<AudioPlayer>(new AudioPlayer())
@@ -58,6 +61,13 @@ export function useSnapture() {
                 case 'text':
                     setTranscript(prev => [...prev, message.content])
                     break
+                case 'clip':
+                    setClips(prev => [...prev, {
+                        url: message.url,
+                        context: message.context,
+                        timestamp: Date.now()
+                    }])
+                    break
                 case 'interrupted':
                     audioPlayer.current.interrupt()
                     break
@@ -100,7 +110,15 @@ export function useSnapture() {
         videoRef.current = video
 
         try {
-            const stream = await mediaCapture.current.start({ video: true, audio: true })
+            const stream = await mediaCapture.current.start({
+                video: true,
+                audio: true,
+                videoConstraints: {
+                    width: { ideal: 1280, max: 1920 },
+                    height: { ideal: 720, max: 1080 },
+                    frameRate: { ideal: 30, max: 60 }
+                }
+            })
             video.srcObject = stream
             await video.play()
 
@@ -111,9 +129,10 @@ export function useSnapture() {
 
             mediaCapture.current.startVideoCapture(video, (base64) => {
                 wsClient.sendVideo(base64)
-            }, 4) // 4 fps
+            }, 24) // 24 fps for clip buffer (server forwards every 2nd to Gemini)
 
             setIsStreaming(true)
+            wsClient.sendStartRecording()
         } catch (error) {
             console.error('[Snapture] Failed to start streaming:', error)
         }
@@ -125,6 +144,18 @@ export function useSnapture() {
             videoRef.current.srcObject = null
         }
         setIsStreaming(false)
+        setIsClipping(false)
+        wsClient.sendStopRecording()
+    }, [])
+
+    const startClip = useCallback(() => {
+        wsClient.sendStartClip()
+        setIsClipping(true)
+    }, [])
+
+    const stopClip = useCallback(() => {
+        wsClient.sendStopClip()
+        setIsClipping(false)
     }, [])
 
     const clearTranscript = useCallback(() => {
@@ -134,10 +165,14 @@ export function useSnapture() {
     return {
         connectionState,
         isStreaming,
+        isClipping,
         lastMessage,
         transcript,
+        clips,
         startStreaming,
         stopStreaming,
+        startClip,
+        stopClip,
         clearTranscript,
     }
 }

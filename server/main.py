@@ -10,14 +10,18 @@ import json
 import logging
 import os
 import uuid
+import time
 from contextlib import asynccontextmanager
 from typing import Dict
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
 
 from gemini_client import GeminiLiveClient
+from video_utils import FrameBuffer, downscale_frame, create_video_clip, VideoRecorder, extract_subclip
 from moment_detector import MomentDetector
 
 # Load environment variables
@@ -34,6 +38,8 @@ logger = logging.getLogger(__name__)
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+CLIP_FPS = int(os.getenv("CLIP_FPS", "24"))
+GEMINI_FRAME_STRIDE = int(os.getenv("GEMINI_FRAME_STRIDE", "2"))
 
 if not GOOGLE_API_KEY:
     logger.warning("GOOGLE_API_KEY not set - Gemini integration will fail")
@@ -69,6 +75,14 @@ class ClientSession:
         self.gemini_client: GeminiLiveClient | None = None
         self.detector = MomentDetector()
         self._connected = True
+        self.gemini_client: GeminiLiveClient | None = None
+        self._connected = True
+        self.frame_buffer = FrameBuffer(max_duration_sec=60, fps=CLIP_FPS)
+        self._video_frame_index = 0
+        self.video_recorder: VideoRecorder | None = None
+        self.recording_start_time: float | None = None
+        self.active_clip_start: float | None = None
+        self.bookmarks: list = []
         
         # State tracking for debouncing - INDEPENDENT timers per type
         self.last_gesture = None
@@ -147,6 +161,7 @@ class ClientSession:
                 await self.gemini_client.send_audio(message.get("data", ""))
 
         elif msg_type == "video":
+            frame_b64 = message.get("data", "")
             video_data = message.get("data", "")
             
             # 1. Process with MomentDetector
@@ -265,7 +280,103 @@ class ClientSession:
 
             # 2. Send to Gemini
             if self.gemini_client:
-                await self.gemini_client.send_video(video_data)
+                # 1. Buffer full resolution frame
+                self.frame_buffer.add_frame(frame_b64)
+                
+                # 2. Write to recorder if active
+                if self.video_recorder and self.video_recorder.is_recording:
+                    # Run in executor to avoid blocking
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, self.video_recorder.write_frame, frame_b64)
+
+                # 3. Forward every Nth frame to Gemini to reduce load
+                self._video_frame_index += 1
+                if self._video_frame_index % GEMINI_FRAME_STRIDE != 0:
+                    return
+
+                # 4. Downscale for Gemini (executor avoids blocking event loop)
+                loop = asyncio.get_running_loop()
+                small_frame = await loop.run_in_executor(
+                    None, downscale_frame, frame_b64
+                )
+                
+                # 5. Send to Gemini
+                await self.gemini_client.send_video(small_frame)
+
+        elif msg_type == "start_recording":
+            timestamp = int(time.time())
+            filename = f"full_session_{self.session_id}_{timestamp}.mp4"
+            filepath = os.path.join("clips", filename)
+            
+            self.video_recorder = VideoRecorder(filepath, fps=CLIP_FPS) 
+            self.bookmarks = [] # Reset bookmarks
+            
+            # Start recording
+            await asyncio.to_thread(self.video_recorder.start)
+            self.recording_start_time = time.time()
+            logger.info(f"Session {self.session_id}: Started recording full session")
+
+        elif msg_type == "stop_recording":
+            if self.video_recorder and self.video_recorder.is_recording:
+                output_path = await asyncio.to_thread(self.video_recorder.stop)
+                self.recording_start_time = None
+                
+                if output_path:
+                    # 1. Send full session clip
+                    filename = os.path.basename(output_path)
+                    clip_url = f"http://localhost:{SERVER_PORT}/clips/{filename}"
+                    await self._send({
+                        "type": "clip",
+                        "url": clip_url,
+                        "context": "Full Session Recording"
+                    })
+                    logger.info(f"Session {self.session_id}: Sent full session clip {clip_url}")
+                    
+                    # 2. Process Bookmarks
+                    if self.bookmarks:
+                        logger.info(f"Session {self.session_id}: Processing {len(self.bookmarks)} bookmarks")
+                        loop = asyncio.get_running_loop()
+                        
+                        for i, bookmark in enumerate(self.bookmarks):
+                            start = bookmark["start"]
+                            end = bookmark["end"]
+                            label = bookmark["label"]
+                            
+                            bookmark_filename = f"clip_{self.session_id}_{int(time.time())}_{i}.mp4"
+                            bookmark_path = os.path.join("clips", bookmark_filename)
+                            
+                            subclip_path = await loop.run_in_executor(
+                                None, extract_subclip, output_path, start, end, bookmark_path
+                            )
+                            
+                            if subclip_path:
+                                subclip_url = f"http://localhost:{SERVER_PORT}/clips/{bookmark_filename}"
+                                await self._send({
+                                    "type": "clip",
+                                    "url": subclip_url,
+                                    "context": f"{label} ({start:.1f}s - {end:.1f}s)"
+                                })
+                                logger.info(f"Session {self.session_id}: Sent bookmark clip {subclip_url}")
+            
+            self.video_recorder = None
+
+        elif msg_type == "start_clip":
+            if self.recording_start_time:
+                current_time = time.time() - self.recording_start_time
+                self.active_clip_start = current_time
+                logger.info(f"Session {self.session_id}: Clip start marked at {current_time:.2f}s")
+
+        elif msg_type == "stop_clip":
+            if self.recording_start_time and self.active_clip_start is not None:
+                current_time = time.time() - self.recording_start_time
+                start_time = self.active_clip_start
+                end_time = current_time
+                
+                logger.info(f"Session {self.session_id}: Clip stop marked ({start_time:.2f}s - {end_time:.2f}s)")
+                self.active_clip_start = None
+                
+                # Generate clip immediately from frame buffer
+                asyncio.create_task(self.generate_clip_from_buffer(start_time, end_time, "Manual Clip"))
 
         elif msg_type == "end":
             # Generate session summary
@@ -307,7 +418,115 @@ class ClientSession:
 
     async def send_text(self, content: str):
         """Send text content to client."""
+        # Handle dynamic clipping triggers
+        if "[START_CLIP]" in content and self.recording_start_time:
+            current_time = time.time() - self.recording_start_time
+            self.active_clip_start = current_time
+            logger.info(f"Session {self.session_id}: Clip start marked at {current_time:.2f}s")
+            
+        if "[END_CLIP]" in content and self.recording_start_time and self.active_clip_start is not None:
+            current_time = time.time() - self.recording_start_time
+            start_time = self.active_clip_start
+            end_time = current_time
+            
+            logger.info(f"Session {self.session_id}: Clip bookmark added ({start_time:.2f}s - {end_time:.2f}s)")
+            self.active_clip_start = None
+            
+            # Generate clip immediately from frame buffer
+            asyncio.create_task(self.generate_clip_from_buffer(start_time, end_time, "Gemini Highlight"))
+            
+        # Legacy trigger fallback (optional, maybe remove if strictly following new plan)
+        if "[CLIP]" in content and not "[START_CLIP]" in content and not "[END_CLIP]" in content:
+             # Just mark a 15s clip ending now
+             if self.recording_start_time:
+                end_time = time.time() - self.recording_start_time
+                start_time = max(0, end_time - 15)
+                self.bookmarks.append({
+                    "start": start_time,
+                    "end": end_time,
+                    "label": "Gemini Clip"
+                })
+                logger.info(f"Session {self.session_id}: Legacy clip trigger processed")
+
         await self._send({"type": "text", "content": content})
+
+    async def generate_and_send_clip(self, context: str):
+        """Generate a video clip and send it to the client."""
+        try:
+            timestamp = int(time.time())
+            filename = f"clip_{self.session_id}_{timestamp}.mp4"
+            filepath = os.path.join("clips", filename)
+            
+            # Get last 10 seconds of frames
+            frames = self.frame_buffer.get_frames(duration_sec=10)
+            if not frames:
+                logger.warning(f"Session {self.session_id}: No frames to clip")
+                return
+
+            logger.info(f"Session {self.session_id}: Generating clip with {len(frames)} frames")
+            
+            # Generate clip in executor
+            loop = asyncio.get_running_loop()
+            result_path = await loop.run_in_executor(
+                None, create_video_clip, frames, filepath, CLIP_FPS
+            )
+            
+            if result_path:
+                clip_url = f"http://localhost:{SERVER_PORT}/clips/{filename}"
+                await self._send({
+                    "type": "clip",
+                    "url": clip_url,
+                    "context": context
+                })
+                logger.info(f"Session {self.session_id}: Sent clip {clip_url}")
+            else:
+                logger.error(f"Session {self.session_id}: Failed to generate clip")
+                
+        except Exception as e:
+            logger.error(f"Session {self.session_id}: Error generating clip: {e}")
+
+    async def generate_clip_from_buffer(self, start_sec: float, end_sec: float, label: str):
+        """Generate a clip from the frame buffer for a specific time range."""
+        try:
+            timestamp = int(time.time())
+            filename = f"clip_{self.session_id}_{timestamp}.mp4"
+            filepath = os.path.join("clips", filename)
+            
+            # Get frames from buffer for the specified duration
+            # The frame buffer stores (timestamp, frame) tuples
+            # We need to calculate frames based on recording timeline
+            duration = end_sec - start_sec
+            if duration <= 0:
+                logger.warning(f"Session {self.session_id}: Invalid clip duration")
+                return
+                
+            # Get recent frames that cover the clip duration
+            frames = self.frame_buffer.get_frames(duration_sec=int(duration) + 2)
+            if not frames:
+                logger.warning(f"Session {self.session_id}: No frames available for clip")
+                return
+
+            logger.info(f"Session {self.session_id}: Generating clip with {len(frames)} frames ({start_sec:.1f}s - {end_sec:.1f}s)")
+            
+            # Generate clip in executor
+            loop = asyncio.get_running_loop()
+            result_path = await loop.run_in_executor(
+                None, create_video_clip, frames, filepath, CLIP_FPS
+            )
+            
+            if result_path:
+                clip_url = f"http://localhost:{SERVER_PORT}/clips/{filename}"
+                await self._send({
+                    "type": "clip",
+                    "url": clip_url,
+                    "context": f"{label} ({start_sec:.1f}s - {end_sec:.1f}s)"
+                })
+                logger.info(f"Session {self.session_id}: Sent clip {clip_url}")
+            else:
+                logger.error(f"Session {self.session_id}: Failed to generate clip from buffer")
+                
+        except Exception as e:
+            logger.error(f"Session {self.session_id}: Error generating clip from buffer: {e}")
 
     async def send_interrupted(self):
         """Notify client that model was interrupted."""
@@ -355,6 +574,7 @@ class ClientSession:
         if self.gemini_client:
             await self.gemini_client.disconnect()
             self.gemini_client = None
+        self.frame_buffer.clear()
         logger.info(f"Session {self.session_id}: Cleaned up")
 
 
@@ -365,6 +585,9 @@ session_manager = SessionManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
+    # Ensure clips directory exists
+    os.makedirs("clips", exist_ok=True)
+    
     logger.info(f"Starting Snapture server on {SERVER_HOST}:{SERVER_PORT}")
     yield
     logger.info("Shutting down Snapture server")
@@ -391,6 +614,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount clips directory (read-only)
+app.mount("/clips", StaticFiles(directory="clips"), name="clips")
 
 
 @app.get("/health")
@@ -440,4 +666,5 @@ if __name__ == "__main__":
         port=SERVER_PORT,
         reload=True,
         log_level="info",
+        reload_excludes=["clips", "*.mp4"],
     )
