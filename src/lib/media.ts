@@ -82,26 +82,54 @@ export class MediaCapture {
     startVideoCapture(videoEl: HTMLVideoElement, onFrame: (base64: string) => void, fps: number = 4) {
         this.onVideoFrame = onFrame
         this.videoElement = videoEl
+        let isProcessing = false
 
         // Create canvas for frame capture
         this.videoCanvas = document.createElement('canvas')
-        this.videoCanvas.width = 640
-        this.videoCanvas.height = 480
         this.videoContext = this.videoCanvas.getContext('2d')
 
         const intervalMs = 1000 / fps
-        this.videoInterval = window.setInterval(() => {
-            if (this.videoElement && this.videoContext && this.videoCanvas) {
+        this.videoInterval = window.setInterval(async () => {
+            if (!this.videoElement || !this.videoContext || !this.videoCanvas || isProcessing) return
+
+            // Update canvas size to match video resolution if needed
+            if (this.videoCanvas.width !== this.videoElement.videoWidth ||
+                this.videoCanvas.height !== this.videoElement.videoHeight) {
+                this.videoCanvas.width = this.videoElement.videoWidth
+                this.videoCanvas.height = this.videoElement.videoHeight
+            }
+
+            if (this.videoCanvas.width === 0 || this.videoCanvas.height === 0) return
+
+            isProcessing = true
+            try {
                 this.videoContext.drawImage(
                     this.videoElement,
                     0, 0,
                     this.videoCanvas.width,
                     this.videoCanvas.height
                 )
-                // Convert to JPEG base64
-                const dataUrl = this.videoCanvas.toDataURL('image/jpeg', 0.7)
-                const base64 = dataUrl.split(',')[1]
-                this.onVideoFrame?.(base64)
+
+                // Use toBlob instead of toDataURL to avoid blocking the main thread
+                this.videoCanvas.toBlob(async (blob) => {
+                    if (!blob) {
+                        isProcessing = false
+                        return
+                    }
+
+                    try {
+                        const buffer = await blob.arrayBuffer()
+                        const base64 = this.arrayBufferToBase64(buffer)
+                        this.onVideoFrame?.(base64)
+                    } catch (e) {
+                        console.error('[Media] Frame conversion error:', e)
+                    } finally {
+                        isProcessing = false
+                    }
+                }, 'image/jpeg', 0.8) // Reduced quality slightly for performance
+            } catch (e) {
+                console.error('[Media] Capture error:', e)
+                isProcessing = false
             }
         }, intervalMs)
 
