@@ -31,19 +31,19 @@ function App() {
   }, [startStreaming])
 
   return (
-    <div className="min-h-screen bg-[var(--ctp-base)] p-6">
-      {/* Header */}
-      <header className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-3">
-          <img src={logoImg} alt="Snapture" className="w-20 h-20 object-contain" />
-        </div>
-        <StatusIndicator state={connectionState} />
-      </header>
+    <div className="min-h-screen bg-[var(--ctp-base)] overflow-x-hidden p-8 md:p-12 lg:p-16">
+        {/* Header */}
+        <header className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-3">
+            <img src={logoImg} alt="Snapture" className="w-20 h-20 object-contain" />
+          </div>
+          <StatusIndicator state={connectionState} />
+        </header>
 
-      {/* Main content */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[calc(100vh-180px)]">
+        {/* Main content */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-10 h-[calc(100vh-200px)]">
         {/* Video preview - takes 2 columns on large screens */}
-        <div className="lg:col-span-2 flex flex-col gap-4">
+        <div className="lg:col-span-2 flex flex-col gap-6">
           <VideoPreview
             ref={videoRef}
             className="flex-1 min-h-[400px]"
@@ -63,7 +63,7 @@ function App() {
         </div>
 
         {/* Right Panel with Tabs */}
-        <div className="flex flex-col gap-4 min-h-[400px]">
+        <div className="flex flex-col gap-5 min-h-[400px]">
           {/* Tab Matcher */}
           <div className="glass p-1 rounded-xl flex gap-1">
             <button

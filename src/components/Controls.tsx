@@ -26,13 +26,13 @@ export function Controls({
     const isConnected = connectionState === 'connected'
 
     return (
-        <div className={cn('flex items-center gap-4', className)}>
+        <div className={cn('flex items-center gap-6', className)}>
             {/* Streaming button */}
             <button
                 onClick={isStreaming ? onStopStreaming : onStartStreaming}
                 disabled={!isConnected}
                 className={cn(
-                    'flex items-center gap-2 px-6 py-3 rounded-xl font-medium',
+                    'flex items-center justify-center gap-3 min-w-[180px] px-8 py-4 rounded-xl font-medium text-base',
                     'transition-all duration-200 ease-out',
                     'disabled:opacity-50 disabled:cursor-not-allowed',
                     isStreaming
@@ -58,7 +58,7 @@ export function Controls({
                 onClick={isClipping ? onStopClip : onStartClip}
                 disabled={!isStreaming}
                 className={cn(
-                    'flex items-center gap-2 px-6 py-3 rounded-xl font-medium',
+                    'flex items-center justify-center gap-3 min-w-[180px] px-8 py-4 rounded-xl font-medium text-base',
                     'transition-all duration-200 ease-out',
                     'disabled:opacity-50 disabled:cursor-not-allowed',
                     isClipping
