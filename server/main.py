@@ -64,8 +64,6 @@ class SessionManager:
             logger.info(f"Session {session_id} removed")
 
 
-from time import time
-
 class ClientSession:
     """Represents a connected client session with Gemini integration."""
 
@@ -166,7 +164,7 @@ class ClientSession:
             
             # 1. Process with MomentDetector
             signals = self.detector.process_frame(video_data)
-            now = time()
+            now = time.time()
             
             # 2. Detect moments from signals
             moments = self.detector.detect_moments(signals)

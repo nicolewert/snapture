@@ -1,13 +1,11 @@
 import { cn } from '../lib/utils'
 import type { ConnectionState } from '../lib/websocket'
-import { Video, VideoOff, Power, PowerOff, Scissors } from 'lucide-react'
+import { Video, VideoOff, Scissors } from 'lucide-react'
 
 interface ControlsProps {
     connectionState: ConnectionState
     isStreaming: boolean
     isClipping: boolean
-    onConnect: () => void
-    onDisconnect: () => void
     onStartStreaming: () => void
     onStopStreaming: () => void
     onStartClip: () => void
@@ -19,8 +17,6 @@ export function Controls({
     connectionState,
     isStreaming,
     isClipping,
-    onConnect,
-    onDisconnect,
     onStartStreaming,
     onStopStreaming,
     onStartClip,

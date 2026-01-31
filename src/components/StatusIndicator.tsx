@@ -1,6 +1,6 @@
 import type { ConnectionState } from '../lib/websocket'
 import { cn } from '../lib/utils'
-import { Wifi, WifiOff, Loader2, AlertCircle } from 'lucide-react'
+import { Loader2, AlertCircle } from 'lucide-react'
 
 interface StatusIndicatorProps {
     state: ConnectionState
@@ -8,31 +8,37 @@ interface StatusIndicatorProps {
 }
 
 const stateConfig: Record<ConnectionState, {
-    icon: typeof Wifi
+    icon: typeof Loader2
     label: string
     color: string
+    dotColor: string
     animate?: boolean
 }> = {
     disconnected: {
-        icon: WifiOff,
-        label: 'Disconnected',
-        color: 'text-[var(--ctp-overlay1)]',
+        icon: Loader2,
+        label: 'Reconnecting...',
+        color: 'text-[var(--ctp-yellow)]',
+        dotColor: 'bg-[var(--ctp-yellow)]',
+        animate: true,
     },
     connecting: {
         icon: Loader2,
         label: 'Connecting...',
         color: 'text-[var(--ctp-yellow)]',
+        dotColor: 'bg-[var(--ctp-yellow)]',
         animate: true,
     },
     connected: {
-        icon: Wifi,
+        icon: Loader2,
         label: 'Connected',
         color: 'text-[var(--ctp-green)]',
+        dotColor: 'bg-[var(--ctp-green)]',
     },
     error: {
         icon: AlertCircle,
-        label: 'Error',
+        label: 'Connection Error',
         color: 'text-[var(--ctp-red)]',
+        dotColor: 'bg-[var(--ctp-red)]',
     },
 }
 
@@ -49,7 +55,7 @@ export function StatusIndicator({ state, className }: StatusIndicatorProps) {
         )
     }
 
-    // For all other states (connecting, error, disconnected), show full indicator with text
+    // For connecting/error states, show full indicator with text
     return (
         <div className={cn('flex items-center gap-2', className)}>
             <Icon
