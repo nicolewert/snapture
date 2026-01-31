@@ -5,7 +5,8 @@ import { StatusIndicator } from './components/StatusIndicator'
 import { Controls } from './components/Controls'
 import { TranscriptPanel } from './components/TranscriptPanel'
 import { ClipsPanel } from './components/ClipsPanel'
-import logoImg from '/public/logo.png'
+
+const logoImg = '/logo.png'
 
 function App() {
   const {
