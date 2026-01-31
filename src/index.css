@@ -41,6 +41,11 @@ body {
   background: var(--ctp-base);
   color: var(--ctp-text);
   min-height: 100vh;
+  overflow-x: hidden;
+}
+
+html {
+  overflow-x: hidden;
 }
 
 /* Custom utility classes */

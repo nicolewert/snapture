@@ -21,7 +21,7 @@ export const VideoPreview = forwardRef<HTMLVideoElement, VideoPreviewProps>(
                     className="w-full h-full object-cover"
                 />
                 {/* Recording indicator */}
-                <div className="absolute top-4 left-4 flex items-center gap-2">
+                <div className="absolute top-5 left-5 flex items-center gap-2.5">
                     <div className="w-3 h-3 rounded-full bg-[var(--ctp-red)] animate-pulse" />
                     <span className="text-xs font-medium text-[var(--ctp-text)] opacity-80">
                         LIVE
