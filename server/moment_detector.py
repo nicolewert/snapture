@@ -51,7 +51,6 @@ class MomentDetector:
         if model_path is None:
             model_path = os.path.join(os.path.dirname(__file__), "models")
         
-        # Ensure absolute path
         model_path = os.path.abspath(model_path)
         logger.info(f"Loading models from: {model_path}")
         
@@ -66,13 +65,17 @@ class MomentDetector:
         
         logger.info(f"✓ Found face_landmarker.task")
         logger.info(f"✓ Found gesture_recognizer.task")
-        
-        self.base_options = python.BaseOptions(model_asset_path=face_model)
-        
+
+        # Load model files as bytes to avoid Windows path issues with MediaPipe
+        with open(face_model, "rb") as f:
+            face_model_data = f.read()
+        with open(gesture_model, "rb") as f:
+            gesture_model_data = f.read()
+
         # 1. Face Landmarker
         try:
             self.face_options = vision.FaceLandmarkerOptions(
-                base_options=self.base_options,
+                base_options=python.BaseOptions(model_asset_buffer=face_model_data),
                 output_face_blendshapes=True,
                 output_facial_transformation_matrixes=False,
                 num_faces=1
@@ -86,7 +89,7 @@ class MomentDetector:
         # 2. Gesture Recognizer
         try:
             self.gesture_options = vision.GestureRecognizerOptions(
-                base_options=python.BaseOptions(model_asset_path=gesture_model),
+                base_options=python.BaseOptions(model_asset_buffer=gesture_model_data),
                 num_hands=2,
                 min_hand_detection_confidence=0.5,
                 min_hand_presence_confidence=0.5,
