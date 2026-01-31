@@ -86,6 +86,9 @@ class MomentDetector:
                     elif category.category_name == "mouthSmileRight":
                         smile_score += category.score
                 
+                # Debug raw smile values periodically could help, but for now let's just log if it's non-zero
+                # logger.info(f"Raw Smile Score: {smile_score:.4f}")
+
                 # Avg score 0.0 - 1.0 (roughly, since we added 2 scores, max is 2.0)
                 signals["smile_score"] = min((smile_score / 2) * 100, 100)
                 

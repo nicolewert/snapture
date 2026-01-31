@@ -58,6 +58,8 @@ class SessionManager:
             logger.info(f"Session {session_id} removed")
 
 
+from time import time
+
 class ClientSession:
     """Represents a connected client session with Gemini integration."""
 
@@ -67,6 +69,12 @@ class ClientSession:
         self.gemini_client: GeminiLiveClient | None = None
         self.detector = MomentDetector()
         self._connected = True
+        
+        # State tracking for debouncing
+        self.last_gesture = None
+        self.last_gesture_time = 0
+        self.is_smiling = False
+        self.last_smile_change = 0
 
     async def setup_gemini(self, model: str = "gemini-2.5-flash-native-audio-latest"):
         """Initialize Gemini Live API connection."""
@@ -126,19 +134,52 @@ class ClientSession:
             video_data = message.get("data", "")
             
             # 1. Process with MomentDetector
-            # We run this synchronously for now as MediaPipe is CPU bound; 
-            # in production might want to offload to thread pool
             signals = self.detector.process_frame(video_data)
+            now = time()
             
-            # Check signals for triggers
+            # Check signals for triggers and update state
             if signals:
-                # Log occasional signals
-                if signals.get("smile_score", 0) > 60: # Threshold depends on the raw metric we chose
-                    logger.info(f"Smile detected: {signals['smile_score']}")
+                # --- Gesture Logic ---
+                current_gesture = signals.get("gesture")
+                # Only trigger if gesture is valid, changed, and enough time passed (1s cooldown)
+                if (current_gesture and 
+                    current_gesture != "None" and 
+                    current_gesture != self.last_gesture and 
+                    (now - self.last_gesture_time > 1.0)):
+                    
+                    logger.info(f"Gesture detected: {current_gesture}")
+                    self.last_gesture = current_gesture
+                    self.last_gesture_time = now
+                    
+                    # Notify Gemini
+                    if self.gemini_client:
+                         await self.gemini_client.send_text(f"[SYSTEM EVENT: User performed gesture '{current_gesture}']")
                 
-                # Rule-based overlay trigger example
-                # if signals.get("energy_score", 0) > 50:
-                    # await self.send_overlay("High Energy!", "praise", 2.0)
+                # Reset gesture state if it disappears for a while so we can re-trigger
+                if not current_gesture or current_gesture == "None":
+                    if now - self.last_gesture_time > 0.5:
+                        self.last_gesture = None
+
+                # --- Smile Logic ---
+                smile_score = signals.get("smile_score", 0)
+                
+                # DEBUG: Log smile score if it's significant at all, to see what the range is
+                if smile_score > 10:
+                    logger.info(f"Smile Score detected: {smile_score:.2f}")
+
+                is_currently_smiling = smile_score > 60
+                
+                if is_currently_smiling != self.is_smiling and (now - self.last_smile_change > 2.0):
+                    self.is_smiling = is_currently_smiling
+                    self.last_smile_change = now
+                    
+                    if is_currently_smiling:
+                         logger.info("Smile started (Threshold passed)")
+                         if self.gemini_client:
+                             await self.gemini_client.send_text("[SYSTEM EVENT: User started smiling broadly]")
+                    # else:
+                    #      # Optional: Notify when smile stops? Might be too noisy.
+                    #      pass
 
             # 2. Send to Gemini
             if self.gemini_client:
