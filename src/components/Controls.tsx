@@ -1,24 +1,30 @@
 import { cn } from '../lib/utils'
 import type { ConnectionState } from '../lib/websocket'
-import { Video, VideoOff, Power, PowerOff } from 'lucide-react'
+import { Video, VideoOff, Power, PowerOff, Scissors } from 'lucide-react'
 
 interface ControlsProps {
     connectionState: ConnectionState
     isStreaming: boolean
+    isClipping: boolean
     onConnect: () => void
     onDisconnect: () => void
     onStartStreaming: () => void
     onStopStreaming: () => void
+    onStartClip: () => void
+    onStopClip: () => void
     className?: string
 }
 
 export function Controls({
     connectionState,
     isStreaming,
+    isClipping,
     onConnect,
     onDisconnect,
     onStartStreaming,
     onStopStreaming,
+    onStartClip,
+    onStopClip,
     className,
 }: ControlsProps) {
     const isConnected = connectionState === 'connected'
@@ -76,6 +82,23 @@ export function Controls({
                         Start Streaming
                     </>
                 )}
+            </button>
+
+            {/* Clip button */}
+            <button
+                onClick={isClipping ? onStopClip : onStartClip}
+                disabled={!isStreaming}
+                className={cn(
+                    'flex items-center gap-2 px-6 py-3 rounded-xl font-medium',
+                    'transition-all duration-200 ease-out',
+                    'disabled:opacity-50 disabled:cursor-not-allowed',
+                    isClipping
+                        ? 'bg-[var(--ctp-peach)] text-[var(--ctp-base)] hover:opacity-90 animate-pulse'
+                        : 'bg-[var(--ctp-blue)] text-[var(--ctp-base)] hover:opacity-90 glow-blue'
+                )}
+            >
+                <Scissors className="w-5 h-5" />
+                {isClipping ? 'Stop Clip' : 'Start Clip'}
             </button>
         </div>
     )
