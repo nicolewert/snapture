@@ -77,6 +77,12 @@ class ClientSession:
         self.is_surprised = False
         self.is_puckering = False
         self.last_state_change = 0
+        
+        # Pose state tracking
+        self.arms_up = False
+        self.t_pose = False
+        self.hands_on_hips = False
+        self.lean_in = False
 
     async def setup_gemini(self, model: str = "gemini-2.5-flash-native-audio-latest"):
         """Initialize Gemini Live API connection."""
@@ -139,14 +145,25 @@ class ClientSession:
             signals = self.detector.process_frame(video_data)
             now = time()
             
+            # 2. Detect moments from signals
+            moments = self.detector.detect_moments(signals)
+            
             # Check signals for triggers and update state
             if signals:
                 # --- Gesture Logic ---
                 current_gesture = signals.get("gesture")
-                if (current_gesture and 
-                    current_gesture != "None" and 
-                    current_gesture != self.last_gesture and 
-                    (now - self.last_gesture_time > 1.5)):
+                
+                # If gesture stopped (None or "None"), reset the last_gesture tracker
+                if not current_gesture or current_gesture == "None":
+                    if self.last_gesture is not None and (now - self.last_gesture_time > 0.3):
+                        logger.info(f"Gesture ended: {self.last_gesture}")
+                        self.last_gesture = None
+                        self.last_gesture_time = now
+                
+                # If new gesture detected and enough time has passed since last gesture
+                elif (current_gesture != "None" and 
+                      (current_gesture != self.last_gesture or self.last_gesture is None) and 
+                      (now - self.last_gesture_time > 0.8)):
                     
                     logger.info(f"Gesture detected: {current_gesture}")
                     self.last_gesture = current_gesture
@@ -154,10 +171,6 @@ class ClientSession:
                     
                     if self.gemini_client:
                          await self.gemini_client.send_text(f"[SYSTEM EVENT: User performed gesture '{current_gesture}']")
-                
-                if not current_gesture or current_gesture == "None":
-                    if now - self.last_gesture_time > 0.8:
-                        self.last_gesture = None
 
                 # --- Expression Logic (Smile, Surprise, Pucker) ---
                 smile_score = signals.get("smile_score", 0)
@@ -196,12 +209,84 @@ class ClientSession:
                              logger.info(f"Hype: Pucker face detected ({pucker_score:.1f}%)")
                              if self.gemini_client:
                                  await self.gemini_client.send_text("[SYSTEM EVENT: User is making a silly pucker face]")
+                
+                # --- Pose Logic ---
+                pose_data = signals.get("pose", {})
+                
+                if pose_data:
+                    # ARMS_UP detection
+                    arms_up_score = pose_data.get("arms_up", 0.0)
+                    if arms_up_score > 0.5 and not self.arms_up and (now - self.last_state_change > 1.5):
+                        self.arms_up = True
+                        self.last_state_change = now
+                        logger.info(f"Pose: Arms up detected ({arms_up_score:.1%})")
+                        if self.gemini_client:
+                            await self.gemini_client.send_text("[SYSTEM EVENT: User has arms raised up in celebration]")
+                    elif arms_up_score <= 0.3 and self.arms_up:
+                        self.arms_up = False
+                    
+                    # T_POSE detection
+                    t_pose_score = pose_data.get("t_pose", 0.0)
+                    if t_pose_score > 0.7 and not self.t_pose and (now - self.last_state_change > 1.5):
+                        self.t_pose = True
+                        self.last_state_change = now
+                        logger.info(f"Pose: T-pose detected")
+                        if self.gemini_client:
+                            await self.gemini_client.send_text("[SYSTEM EVENT: User is in T-pose with arms extended horizontally]")
+                    elif t_pose_score <= 0.5 and self.t_pose:
+                        self.t_pose = False
+                    
+                    # HANDS_ON_HIPS detection
+                    hips_score = pose_data.get("hands_on_hips", 0.0)
+                    if hips_score > 0.7 and not self.hands_on_hips and (now - self.last_state_change > 1.5):
+                        self.hands_on_hips = True
+                        self.last_state_change = now
+                        logger.info(f"Pose: Hands on hips detected")
+                        if self.gemini_client:
+                            await self.gemini_client.send_text("[SYSTEM EVENT: User has hands on hips in confident pose]")
+                    elif hips_score <= 0.5 and self.hands_on_hips:
+                        self.hands_on_hips = False
+                    
+                    # LEAN_IN detection
+                    lean_score = pose_data.get("lean_in", 0.0)
+                    if lean_score > 0.6 and not self.lean_in and (now - self.last_state_change > 1.5):
+                        self.lean_in = True
+                        self.last_state_change = now
+                        logger.info(f"Pose: Lean in detected ({lean_score:.1%})")
+                        if self.gemini_client:
+                            await self.gemini_client.send_text("[SYSTEM EVENT: User is leaning in toward the camera]")
+                    elif lean_score <= 0.4 and self.lean_in:
+                        self.lean_in = False
 
             # 2. Send to Gemini
             if self.gemini_client:
                 await self.gemini_client.send_video(video_data)
 
         elif msg_type == "end":
+            # Generate session summary
+            best_moments = self.detector.get_best_moments(3)
+            
+            # Calculate suggested clip time (first to last moment)
+            if self.detector.moment_buffer:
+                timestamps = [m.timestamp for m in self.detector.moment_buffer]
+                suggested_clip = {
+                    "start": min(timestamps),
+                    "end": max(timestamps)
+                }
+            else:
+                suggested_clip = {"start": 0, "end": 0}
+            
+            # Send summary to client
+            await self._send({
+                "type": "session_summary",
+                "data": {
+                    "best_moments": best_moments,
+                    "suggested_clip": suggested_clip
+                }
+            })
+            
+            logger.info(f"Session {self.session_id}: Summary sent with {len(best_moments)} best moments")
+            
             await self.cleanup()
 
         else:
