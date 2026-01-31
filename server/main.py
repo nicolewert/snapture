@@ -70,19 +70,27 @@ class ClientSession:
         self.detector = MomentDetector()
         self._connected = True
         
-        # State tracking for debouncing
+        # State tracking for debouncing - INDEPENDENT timers per type
         self.last_gesture = None
         self.last_gesture_time = 0
-        self.is_smiling = False
-        self.is_surprised = False
-        self.is_puckering = False
-        self.last_state_change = 0
         
-        # Pose state tracking
+        # Expression states with individual timers
+        self.is_smiling = False
+        self.last_smile_time = 0
+        self.is_surprised = False
+        self.last_surprise_time = 0
+        self.is_puckering = False
+        self.last_pucker_time = 0
+        
+        # Pose state tracking with individual timers
         self.arms_up = False
+        self.last_arms_up_time = 0
         self.t_pose = False
+        self.last_t_pose_time = 0
         self.hands_on_hips = False
+        self.last_hands_on_hips_time = 0
         self.lean_in = False
+        self.last_lean_in_time = 0
 
     async def setup_gemini(self, model: str = "gemini-2.5-flash-native-audio-latest"):
         """Initialize Gemini Live API connection."""
@@ -172,86 +180,83 @@ class ClientSession:
                     if self.gemini_client:
                          await self.gemini_client.send_text(f"[SYSTEM EVENT: User performed gesture '{current_gesture}']")
 
-                # --- Expression Logic (Smile, Surprise, Pucker) ---
+                # --- Expression Logic (Smile, Surprise, Pucker) - INDEPENDENT debouncing ---
                 smile_score = signals.get("smile_score", 0)
                 surprise_score = signals.get("surprise_score", 0)
                 pucker_score = signals.get("pucker_score", 0)
                 
-                # Debounce global state changes
-                if now - self.last_state_change > 2.0:
-                    
-                    # Smile detection (Lowered threshold to 40 for sensitivity)
-                    is_currently_smiling = smile_score > 40
-                    if is_currently_smiling != self.is_smiling:
-                        self.is_smiling = is_currently_smiling
-                        self.last_state_change = now
-                        if is_currently_smiling:
-                             logger.info(f"Hype: Smile detected ({smile_score:.1f}%)")
-                             if self.gemini_client:
-                                 await self.gemini_client.send_text("[SYSTEM EVENT: User is smiling broadly]")
-                    
-                    # Surprise detection
-                    is_currently_surprised = surprise_score > 50
-                    if is_currently_surprised != self.is_surprised:
-                        self.is_surprised = is_currently_surprised
-                        self.last_state_change = now
-                        if is_currently_surprised:
-                             logger.info(f"Hype: Surprise detected ({surprise_score:.1f}%)")
-                             if self.gemini_client:
-                                 await self.gemini_client.send_text("[SYSTEM EVENT: User looks surprised/amazed]")
-
-                    # Pucker detection (Silly face)
-                    is_currently_puckering = pucker_score > 50
-                    if is_currently_puckering != self.is_puckering:
-                        self.is_puckering = is_currently_puckering
-                        self.last_state_change = now
-                        if is_currently_puckering:
-                             logger.info(f"Hype: Pucker face detected ({pucker_score:.1f}%)")
-                             if self.gemini_client:
-                                 await self.gemini_client.send_text("[SYSTEM EVENT: User is making a silly pucker face]")
+                # Smile detection - 2s debounce
+                is_currently_smiling = smile_score > 40
+                if is_currently_smiling != self.is_smiling and (now - self.last_smile_time > 2.0):
+                    self.is_smiling = is_currently_smiling
+                    self.last_smile_time = now
+                    if is_currently_smiling:
+                         logger.info(f"Hype: Smile detected ({smile_score:.1f}%)")
+                         if self.gemini_client:
+                             await self.gemini_client.send_text("[SYSTEM EVENT: User is smiling broadly]")
                 
-                # --- Pose Logic ---
+                # Surprise detection - 2s debounce
+                is_currently_surprised = surprise_score > 50
+                if is_currently_surprised != self.is_surprised and (now - self.last_surprise_time > 2.0):
+                    self.is_surprised = is_currently_surprised
+                    self.last_surprise_time = now
+                    if is_currently_surprised:
+                         logger.info(f"Hype: Surprise detected ({surprise_score:.1f}%)")
+                         if self.gemini_client:
+                             await self.gemini_client.send_text("[SYSTEM EVENT: User looks surprised/amazed]")
+
+                # Pucker detection - 2s debounce
+                is_currently_puckering = pucker_score > 50
+                if is_currently_puckering != self.is_puckering and (now - self.last_pucker_time > 2.0):
+                    self.is_puckering = is_currently_puckering
+                    self.last_pucker_time = now
+                    if is_currently_puckering:
+                         logger.info(f"Hype: Pucker face detected ({pucker_score:.1f}%)")
+                         if self.gemini_client:
+                             await self.gemini_client.send_text("[SYSTEM EVENT: User is making a silly pucker face]")
+                
+                # --- Pose Logic - INDEPENDENT debouncing ---
                 pose_data = signals.get("pose", {})
                 
                 if pose_data:
-                    # ARMS_UP detection
+                    # ARMS_UP detection - 1.5s debounce
                     arms_up_score = pose_data.get("arms_up", 0.0)
-                    if arms_up_score > 0.5 and not self.arms_up and (now - self.last_state_change > 1.5):
+                    if arms_up_score > 0.5 and not self.arms_up and (now - self.last_arms_up_time > 1.5):
                         self.arms_up = True
-                        self.last_state_change = now
+                        self.last_arms_up_time = now
                         logger.info(f"Pose: Arms up detected ({arms_up_score:.1%})")
                         if self.gemini_client:
                             await self.gemini_client.send_text("[SYSTEM EVENT: User has arms raised up in celebration]")
                     elif arms_up_score <= 0.3 and self.arms_up:
                         self.arms_up = False
                     
-                    # T_POSE detection
+                    # T_POSE detection - 1.5s debounce
                     t_pose_score = pose_data.get("t_pose", 0.0)
-                    if t_pose_score > 0.7 and not self.t_pose and (now - self.last_state_change > 1.5):
+                    if t_pose_score > 0.7 and not self.t_pose and (now - self.last_t_pose_time > 1.5):
                         self.t_pose = True
-                        self.last_state_change = now
+                        self.last_t_pose_time = now
                         logger.info(f"Pose: T-pose detected")
                         if self.gemini_client:
                             await self.gemini_client.send_text("[SYSTEM EVENT: User is in T-pose with arms extended horizontally]")
                     elif t_pose_score <= 0.5 and self.t_pose:
                         self.t_pose = False
                     
-                    # HANDS_ON_HIPS detection
+                    # HANDS_ON_HIPS detection - 1.5s debounce
                     hips_score = pose_data.get("hands_on_hips", 0.0)
-                    if hips_score > 0.7 and not self.hands_on_hips and (now - self.last_state_change > 1.5):
+                    if hips_score > 0.7 and not self.hands_on_hips and (now - self.last_hands_on_hips_time > 1.5):
                         self.hands_on_hips = True
-                        self.last_state_change = now
+                        self.last_hands_on_hips_time = now
                         logger.info(f"Pose: Hands on hips detected")
                         if self.gemini_client:
                             await self.gemini_client.send_text("[SYSTEM EVENT: User has hands on hips in confident pose]")
                     elif hips_score <= 0.5 and self.hands_on_hips:
                         self.hands_on_hips = False
                     
-                    # LEAN_IN detection
+                    # LEAN_IN detection - 1.5s debounce
                     lean_score = pose_data.get("lean_in", 0.0)
-                    if lean_score > 0.6 and not self.lean_in and (now - self.last_state_change > 1.5):
+                    if lean_score > 0.6 and not self.lean_in and (now - self.last_lean_in_time > 1.5):
                         self.lean_in = True
-                        self.last_state_change = now
+                        self.last_lean_in_time = now
                         logger.info(f"Pose: Lean in detected ({lean_score:.1%})")
                         if self.gemini_client:
                             await self.gemini_client.send_text("[SYSTEM EVENT: User is leaning in toward the camera]")
