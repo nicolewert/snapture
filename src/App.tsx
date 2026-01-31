@@ -4,7 +4,7 @@ import { VideoPreview } from './components/VideoPreview'
 import { StatusIndicator } from './components/StatusIndicator'
 import { Controls } from './components/Controls'
 import { TranscriptPanel } from './components/TranscriptPanel'
-import { Sparkles } from 'lucide-react'
+import logoImg from '/public/logo.png'
 
 function App() {
   const {
@@ -28,13 +28,7 @@ function App() {
       {/* Header */}
       <header className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[var(--ctp-mauve)] to-[var(--ctp-pink)] flex items-center justify-center">
-            <Sparkles className="w-5 h-5 text-[var(--ctp-base)]" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-[var(--ctp-text)]">Snapture</h1>
-            <p className="text-sm text-[var(--ctp-subtext0)]">AI-powered video coaching</p>
-          </div>
+          <img src={logoImg} alt="Snapture" className="w-20 h-20 object-contain" />
         </div>
         <StatusIndicator state={connectionState} />
       </header>
