@@ -3,36 +3,45 @@ import base64
 import cv2
 import numpy as np
 import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
 class MomentDetector:
     """
-    Detects moments and signals from video frames using MediaPipe.
-    Analyzes facial expressions and body pose to compute metrics.
+    Detects moments and signals using MediaPipe Tasks (FaceLandmarker, GestureRecognizer).
     """
-    def __init__(self):
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        self.mp_pose = mp.solutions.pose
-        self.pose = self.mp_pose.Pose(
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
+    def __init__(self, model_path: str = "models"):
+        # Base options
+        self.base_options = python.BaseOptions(model_asset_path=f"{model_path}/face_landmarker.task")
         
-        # Signal history for smoothing/energy calc
-        self.prev_nose_y = None
+        # 1. Face Landmarker
+        self.face_options = vision.FaceLandmarkerOptions(
+            base_options=self.base_options,
+            output_face_blendshapes=True,
+            output_facial_transformation_matrixes=False,
+            num_faces=1
+        )
+        self.face_landmarker = vision.FaceLandmarker.create_from_options(self.face_options)
+        
+        # 2. Gesture Recognizer
+        self.gesture_options = vision.GestureRecognizerOptions(
+            base_options=python.BaseOptions(model_asset_path=f"{model_path}/gesture_recognizer.task"),
+            num_hands=2,
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        self.gesture_recognizer = vision.GestureRecognizer.create_from_options(self.gesture_options)
+        
+        # State tracking
+        self.last_process_time = 0
         
     def process_frame(self, base64_data: str) -> Dict[str, Any]:
         """
         Process a base64 encoded image frame.
-        Returns a dictionary of calculated signals.
         """
         try:
             # Decode image
@@ -43,77 +52,45 @@ class MomentDetector:
             if image is None:
                 return {}
 
-            # Convert to RGB for MediaPipe
+            # Convert to MediaPipe Image
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
             
             signals = {
                 "smile_score": 0.0,
-                "energy_score": 0.0,
-                "is_centered": False
+                "gesture": None,
+                "expression": None
             }
 
-            # Process Face
-            face_results = self.face_mesh.process(image_rgb)
-            if face_results.multi_face_landmarks:
-                landmarks = face_results.multi_face_landmarks[0]
-                signals["smile_score"] = self._calculate_smile(landmarks)
-                
-            # Process Pose (for energy/centering)
-            # Optimization: distinct pose call might be heavy, maybe skip every other frame?
-            # For now, run it.
-            pose_results = self.pose.process(image_rgb)
-            if pose_results.pose_landmarks:
-                signals["energy_score"] = self._calculate_energy(pose_results.pose_landmarks)
-                signals["is_centered"] = self._check_centering(pose_results.pose_landmarks)
+            # 1. Detect Gestures (Hands)
+            gesture_result = self.gesture_recognizer.recognize(mp_image)
+            if gesture_result.gestures:
+                # Get top gesture from first hand
+                top_gesture = gesture_result.gestures[0][0]
+                if top_gesture.category_name != "None":
+                    signals["gesture"] = top_gesture.category_name
+                    # logger.info(f"Gesture detected: {top_gesture.category_name} ({top_gesture.score:.2f})")
 
+            # 2. Detect Face Blendshapes (Expressions)
+            face_result = self.face_landmarker.detect(mp_image)
+            if face_result.face_blendshapes:
+                blendshapes = face_result.face_blendshapes[0] # List of 52 scores
+                
+                # Extract specific blendshapes (look for index or name)
+                # Note: The API returns a list of categories. We need to find 'mouthSmileLeft' and 'mouthSmileRight'
+                
+                smile_score = 0
+                for category in blendshapes:
+                    if category.category_name == "mouthSmileLeft":
+                        smile_score += category.score
+                    elif category.category_name == "mouthSmileRight":
+                        smile_score += category.score
+                
+                # Avg score 0.0 - 1.0 (roughly, since we added 2 scores, max is 2.0)
+                signals["smile_score"] = min((smile_score / 2) * 100, 100)
+                
             return signals
 
         except Exception as e:
             logger.error(f"Error processing frame: {e}")
             return {}
-
-    def _calculate_smile(self, landmarks) -> float:
-        """
-        Calculate smile score based on mouth landmarks.
-        Simple heuristic: distance between mouth corners vs mouth width.
-        """
-        # Lip corners: 61 and 291
-        # Upper lip top: 13
-        # Lower lip bottom: 14
-        
-        # Convert landmarks to numpy array for easier math if needed, 
-        # but accessing .x .y directly is fast enough for simple distance
-        
-        left_corner = landmarks.landmark[61]
-        right_corner = landmarks.landmark[291]
-        
-        # Simple width
-        mouth_width = ((right_corner.x - left_corner.x)**2 + (right_corner.y - left_corner.y)**2)**0.5
-        
-        # This is a very basic heuristic; a "smile" often widens the mouth
-        # A better one might compare to a neutral face, but we don't have calibration.
-        # Let's return raw width for now, or normalize roughly.
-        # Typical face width might be around 0.5 of frame? 
-        # Let's just return the raw width as a score for now.
-        return float(mouth_width) 
-
-    def _calculate_energy(self, landmarks) -> float:
-        """
-        Calculate energy score based on movement.
-        """
-        nose = landmarks.landmark[self.mp_pose.PoseLandmark.NOSE]
-        
-        energy = 0.0
-        if self.prev_nose_y is not None:
-             # Vertical movement
-            delta = abs(nose.y - self.prev_nose_y)
-            # Amplify small movements
-            energy = min(delta * 100, 1.0) 
-            
-        self.prev_nose_y = nose.y
-        return float(energy)
-
-    def _check_centering(self, landmarks) -> bool:
-        """Check if user is roughly centered."""
-        nose = landmarks.landmark[self.mp_pose.PoseLandmark.NOSE]
-        return 0.4 < nose.x < 0.6
