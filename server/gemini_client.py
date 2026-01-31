@@ -37,16 +37,59 @@ class GeminiLiveClient:
         """Establish connection to Gemini Live API."""
         logger.info(f"Connecting to Gemini Live API with model: {self.model}")
 
+        # Define tools
+        tools = [
+            {
+                "function_declarations": [
+                    {
+                        "name": "bookmark_moment",
+                        "description": "Bookmark a specific moment in the video recording when something interesting happens or when the user does something well.",
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "label": {
+                                    "type": "STRING", 
+                                    "description": "Label for the bookmark (e.g., 'Great Smile', 'Good Delivery')"
+                                },
+                                "confidence": {
+                                    "type": "NUMBER",
+                                    "description": "Confidence score 0.0-1.0"
+                                }
+                            },
+                            "required": ["label"]
+                        }
+                    },
+                    {
+                        "name": "set_overlay",
+                        "description": "Trigger a visual overlay on the user's screen to provide feedback or direction.",
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "text": {
+                                    "type": "STRING",
+                                    "description": "Text to display on the overlay"
+                                },
+                                "kind": {
+                                    "type": "STRING",
+                                    "description": "Type of overlay: 'CUT', 'instruction', 'praise'",
+                                    "enum": ["CUT", "instruction", "praise"]
+                                },
+                                "duration": {
+                                    "type": "NUMBER",
+                                    "description": "Duration in seconds to show the overlay"
+                                }
+                            },
+                            "required": ["text"]
+                        }
+                    }
+                ]
+            }
+        ]
+
         # Configure the Live API session
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
-            # speech_config=types.SpeechConfig(
-            #     voice_config=types.VoiceConfig(
-            #         prebuilt_voice_config=types.PrebuiltVoiceConfig(
-            #             voice_name="Puck"  # Options: Puck, Charon, Kore, Fenrir, Aoede
-            #         )
-            #     )
-            # ),
+            tools=tools,
             system_instruction=types.Content(
                 parts=[
                     types.Part(
@@ -58,6 +101,10 @@ Your role:
 - Give real-time feedback on what you see.
 - Keep feedback short and actionable (1-2 sentences max).
 - Be enthusiastic and supportive.
+
+Use your tools:
+- If they give a Thumbs Up or nail a line, call `bookmark_moment` to mark that moment as a highlight.
+- If they mess up or you want to give a visual cue, call `set_overlay` to display feedback on their screen.
 
 Example feedback:
 - "Love the energy! Try moving the camera up a bit for better framing."
@@ -120,7 +167,7 @@ Keep your responses conversational and brief since this is real-time coaching.""
                                 audio_b64 = base64.b64encode(audio_data).decode("utf-8")
                             else:
                                 audio_b64 = audio_data
-                            logger.debug(f"Received audio: {len(audio_b64)} chars")
+                            # logger.debug(f"Received audio: {len(audio_b64)} chars")
                             if self.on_audio:
                                 self.on_audio(audio_b64)
 
@@ -129,9 +176,60 @@ Keep your responses conversational and brief since this is real-time coaching.""
                             logger.debug(f"Received text: {part.text[:50]}...")
                             if self.on_text:
                                 self.on_text(part.text)
+                        
+                        elif hasattr(part, "executable_code") and part.executable_code:
+                             # We shouldn't get this if we use function declarations, but good to handle
+                             pass
+
+            # Handle tool calls
+            if hasattr(response, "tool_call") and response.tool_call:
+                 await self._handle_tool_call(response.tool_call)
 
         except Exception as e:
             logger.error(f"Error handling response: {e}")
+
+    async def _handle_tool_call(self, tool_call: Any) -> None:
+        """Handle a ToolCall from Gemini."""
+        try:
+            for fc in tool_call.function_calls:
+                name = fc.name
+                args = fc.args
+                
+                logger.info(f"Tool called: {name} with args: {args}")
+                
+                # Execute the tool callbacks if they exist
+                # We could register dynamic callbacks, but sticking to the plan's 2 specific ones for now
+                if name == "bookmark_moment":
+                    if hasattr(self, "on_bookmark"):
+                        confidence = args.get("confidence", 1.0)
+                        label = args.get("label", "Moment")
+                        if self.on_bookmark:
+                            self.on_bookmark(label, confidence)
+                            
+                elif name == "set_overlay":
+                    if hasattr(self, "on_overlay"):
+                        text = args.get("text", "")
+                        kind = args.get("kind", "instruction")
+                        duration = args.get("duration", 2.0)
+                        if self.on_overlay:
+                            self.on_overlay(text, kind, duration)
+
+            # Send tool response back to Gemini to acknowledge
+            # For the Live API, we usually need to send a ToolResponse
+            tool_response = types.LiveClientToolResponse(
+                 function_responses=[
+                     types.FunctionResponse(
+                         name=fc.name,
+                         id=fc.id,
+                         response={"result": "ok"} 
+                     ) for fc in tool_call.function_calls
+                 ]
+            )
+            
+            await self._session_ctx.send(input=tool_response)
+            
+        except Exception as e:
+            logger.error(f"Error handling tool call: {e}")
 
     async def send_audio(self, audio_b64: str) -> None:
         """Send audio data to Gemini (expects 16kHz PCM base64)."""
