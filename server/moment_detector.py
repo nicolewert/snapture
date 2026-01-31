@@ -59,7 +59,9 @@ class MomentDetector:
             signals = {
                 "smile_score": 0.0,
                 "gesture": None,
-                "expression": None
+                "pucker_score": 0.0,
+                "surprise_score": 0.0,
+                "brow_score": 0.0
             }
 
             # 1. Detect Gestures (Hands)
@@ -69,28 +71,25 @@ class MomentDetector:
                 top_gesture = gesture_result.gestures[0][0]
                 if top_gesture.category_name != "None":
                     signals["gesture"] = top_gesture.category_name
-                    # logger.info(f"Gesture detected: {top_gesture.category_name} ({top_gesture.score:.2f})")
 
             # 2. Detect Face Blendshapes (Expressions)
             face_result = self.face_landmarker.detect(mp_image)
             if face_result.face_blendshapes:
-                blendshapes = face_result.face_blendshapes[0] # List of 52 scores
+                blendshapes = face_result.face_blendshapes[0]
                 
-                # Extract specific blendshapes (look for index or name)
-                # Note: The API returns a list of categories. We need to find 'mouthSmileLeft' and 'mouthSmileRight'
-                
-                smile_score = 0
+                # Manual extraction for specific emotions
                 for category in blendshapes:
-                    if category.category_name == "mouthSmileLeft":
-                        smile_score += category.score
-                    elif category.category_name == "mouthSmileRight":
-                        smile_score += category.score
-                
-                # Debug raw smile values periodically could help, but for now let's just log if it's non-zero
-                # logger.info(f"Raw Smile Score: {smile_score:.4f}")
-
-                # Avg score 0.0 - 1.0 (roughly, since we added 2 scores, max is 2.0)
-                signals["smile_score"] = min((smile_score / 2) * 100, 100)
+                    name = category.category_name
+                    score = category.score * 100 # Normalize to 0-100
+                    
+                    if name in ["mouthSmileLeft", "mouthSmileRight"]:
+                        signals["smile_score"] += (score / 2)
+                    elif name == "mouthPucker":
+                        signals["pucker_score"] = score
+                    elif name == "browInnerUp":
+                        signals["surprise_score"] = score
+                    elif name in ["browDownLeft", "browDownRight"]:
+                        signals["brow_score"] += (score / 2)
                 
             return signals
 

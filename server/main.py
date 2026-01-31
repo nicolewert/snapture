@@ -74,7 +74,9 @@ class ClientSession:
         self.last_gesture = None
         self.last_gesture_time = 0
         self.is_smiling = False
-        self.last_smile_change = 0
+        self.is_surprised = False
+        self.is_puckering = False
+        self.last_state_change = 0
 
     async def setup_gemini(self, model: str = "gemini-2.5-flash-native-audio-latest"):
         """Initialize Gemini Live API connection."""
@@ -141,45 +143,59 @@ class ClientSession:
             if signals:
                 # --- Gesture Logic ---
                 current_gesture = signals.get("gesture")
-                # Only trigger if gesture is valid, changed, and enough time passed (1s cooldown)
                 if (current_gesture and 
                     current_gesture != "None" and 
                     current_gesture != self.last_gesture and 
-                    (now - self.last_gesture_time > 1.0)):
+                    (now - self.last_gesture_time > 1.5)):
                     
                     logger.info(f"Gesture detected: {current_gesture}")
                     self.last_gesture = current_gesture
                     self.last_gesture_time = now
                     
-                    # Notify Gemini
                     if self.gemini_client:
                          await self.gemini_client.send_text(f"[SYSTEM EVENT: User performed gesture '{current_gesture}']")
                 
-                # Reset gesture state if it disappears for a while so we can re-trigger
                 if not current_gesture or current_gesture == "None":
-                    if now - self.last_gesture_time > 0.5:
+                    if now - self.last_gesture_time > 0.8:
                         self.last_gesture = None
 
-                # --- Smile Logic ---
+                # --- Expression Logic (Smile, Surprise, Pucker) ---
                 smile_score = signals.get("smile_score", 0)
+                surprise_score = signals.get("surprise_score", 0)
+                pucker_score = signals.get("pucker_score", 0)
                 
-                # DEBUG: Log smile score if it's significant at all, to see what the range is
-                if smile_score > 10:
-                    logger.info(f"Smile Score detected: {smile_score:.2f}")
-
-                is_currently_smiling = smile_score > 60
-                
-                if is_currently_smiling != self.is_smiling and (now - self.last_smile_change > 2.0):
-                    self.is_smiling = is_currently_smiling
-                    self.last_smile_change = now
+                # Debounce global state changes
+                if now - self.last_state_change > 2.0:
                     
-                    if is_currently_smiling:
-                         logger.info("Smile started (Threshold passed)")
-                         if self.gemini_client:
-                             await self.gemini_client.send_text("[SYSTEM EVENT: User started smiling broadly]")
-                    # else:
-                    #      # Optional: Notify when smile stops? Might be too noisy.
-                    #      pass
+                    # Smile detection (Lowered threshold to 40 for sensitivity)
+                    is_currently_smiling = smile_score > 40
+                    if is_currently_smiling != self.is_smiling:
+                        self.is_smiling = is_currently_smiling
+                        self.last_state_change = now
+                        if is_currently_smiling:
+                             logger.info(f"Hype: Smile detected ({smile_score:.1f}%)")
+                             if self.gemini_client:
+                                 await self.gemini_client.send_text("[SYSTEM EVENT: User is smiling broadly]")
+                    
+                    # Surprise detection
+                    is_currently_surprised = surprise_score > 50
+                    if is_currently_surprised != self.is_surprised:
+                        self.is_surprised = is_currently_surprised
+                        self.last_state_change = now
+                        if is_currently_surprised:
+                             logger.info(f"Hype: Surprise detected ({surprise_score:.1f}%)")
+                             if self.gemini_client:
+                                 await self.gemini_client.send_text("[SYSTEM EVENT: User looks surprised/amazed]")
+
+                    # Pucker detection (Silly face)
+                    is_currently_puckering = pucker_score > 50
+                    if is_currently_puckering != self.is_puckering:
+                        self.is_puckering = is_currently_puckering
+                        self.last_state_change = now
+                        if is_currently_puckering:
+                             logger.info(f"Hype: Pucker face detected ({pucker_score:.1f}%)")
+                             if self.gemini_client:
+                                 await self.gemini_client.send_text("[SYSTEM EVENT: User is making a silly pucker face]")
 
             # 2. Send to Gemini
             if self.gemini_client:
