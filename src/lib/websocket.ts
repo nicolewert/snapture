@@ -80,6 +80,14 @@ export class WebSocketClient {
         })
     }
 
+    // Support reconnection after errors
+    async reconnect(): Promise<void> {
+        console.log('[WS] Attempting to reconnect...')
+        this.ws = null
+        this.setState('disconnected')
+        return this.connect()
+    }
+
     disconnect() {
         if (this.ws) {
             this.send({ type: 'end' })

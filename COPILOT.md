@@ -243,17 +243,167 @@ At end of session, `MomentDetector.get_best_moments()` returns:
 
 ---
 
+## Smart Connection Management (Jan 31, 2026)
+
+### Implementation: Zero-Friction Auto-Cleanup + Always-On Status
+
+#### Changes Made
+
+**1. Removed Disconnect Button**
+- Deleted manual disconnect button from `Controls.tsx`
+- Users no longer manage connection lifecycle
+- Connection cleanup happens automatically
+
+**2. Automatic Page Cleanup (`useSnapture.ts`)**
+- **`beforeunload` event:** Stops streaming + closes WebSocket when user:
+  - Closes tab/window
+  - Navigates to different URL
+  - Refreshes page
+- **`visibilitychange` event:** Stops streaming when tab hidden (keeps connection alive for quick return)
+- **Component unmount:** Clears all timers and listeners on cleanup
+
+**3. Smarter Status Indicator (`StatusIndicator.tsx`)**
+- **Connected state:** Shows minimal green dot (2x2px) in header—no noise
+- **Connecting state:** Shows yellow pulsing icon + "Connecting..." text
+- **Reconnecting state:** Shows yellow icon + "Reconnecting..." text
+- **Error/Disconnected state:** Shows red icon + error message
+
+#### User Flow
+
+```
+Page Load
+  ↓
+Auto-connecting in background
+  ↓
+[Green dot] Connected & Ready ←── Users see minimal indicator
+  ↓
+Click "Start Recording"
+  ↓
+Camera permission request
+  ↓
+Streaming... [Green dot still visible]
+  ↓
+User closes tab / leaves page
+  ↓
+[beforeunload] Streaming stops + WebSocket closes automatically
+```
+
+**If connection fails during use:**
+```
+Streaming...
+  ↓
+[Connection drops]
+  ↓
+[Yellow pulsing icon] "Reconnecting..." ← User sees problem
+  ↓
+Auto-reconnect with exponential backoff
+  ↓
+[Green dot] Reconnected ← Problem resolved silently
+```
+
+#### Benefits
+
+✅ **Zero buttons:** No connect/disconnect burden on users  
+✅ **Automatic cleanup:** No orphaned WebSocket connections  
+✅ **Visual confidence:** Green dot = healthy, yellow/red = problem  
+✅ **Smart visibility:** Pauses streaming if tab hidden (battery/bandwidth saver)  
+✅ **Resilient:** Auto-reconnects with exponential backoff  
+✅ **Non-intrusive:** Status indicator minimal when healthy, clear when broken  
+
+---
+
+## Auto-Connect Architecture Update (Solution B)
+
+### Implementation: Jan 31, 2026
+
+WebSocket now connects automatically on page load instead of requiring manual "Connect" button click.
+
+#### Changes Made
+
+**Frontend:**
+1. **`useSnapture.ts`** - Auto-connect on mount
+   - Removed `connect` from exported hook API
+   - Auto-calls `wsClient.connect()` on component mount
+   - Implements exponential backoff reconnection (1s → 2s → 4s → max 30s)
+   - State initializes as `'connecting'` instead of `'disconnected'`
+   - Clears reconnect timeout when successfully connected
+
+2. **`Controls.tsx`** - Removed Connect button
+   - Removed `onConnect` prop
+   - "Connect" button deleted entirely
+   - "Start Recording" button now only controls camera stream (requires connected state)
+   - "Disconnect" button shown only when connected (optional for user)
+
+3. **`StatusIndicator.tsx`** - Error-only display
+   - Now returns `null` when state is `'connected'` (hidden during normal operation)
+   - Only shows indicator for: `connecting`, `error`, `disconnected`
+   - Cleaner UI—no status noise when everything is working
+
+4. **`App.tsx`** - Removed connect handler
+   - Removed `connect` from `useSnapture` destructure
+   - Updated `Controls` props (removed `onConnect`)
+
+5. **`websocket.ts`** - Added reconnection method
+   - New `reconnect()` method for programmatic reconnection
+   - Can be called manually if user hits "Disconnect" and wants to reconnect
+
+**Backend:**
+- ✅ Already supports idle connections
+- No changes needed—backend waits for `setup` message before initializing Gemini
+
+#### User Flow
+
+**Before (with Connect button):**
+```
+Page Load → Disconnected state
+  ↓
+User clicks "Connect" → Connecting → Connected
+  ↓
+User clicks "Start Recording" → Streaming
+```
+
+**After (auto-connect):**
+```
+Page Load → Connecting (automatically)
+  ↓
+[Auto-connects in background]
+  ↓
+Connected state [ready to record immediately]
+  ↓
+User clicks "Start Recording" → Camera request → Streaming
+```
+
+#### Benefits
+
+✅ **Zero friction:** Users land on page already connected  
+✅ **Faster recording:** Camera permissions only needed for streaming (not connection)  
+✅ **Cleaner UI:** No status indicator clutter when working normally  
+✅ **Resilient:** Auto-reconnects with exponential backoff if connection drops  
+✅ **Backwards compatible:** Backend unchanged, works with any setup message  
+
+#### Failure Handling
+
+| Scenario | Behavior |
+|----------|----------|
+| Connection fails on load | Shows "Error" indicator, auto-retries with backoff |
+| Connection drops mid-session | Shows "Reconnecting...", auto-retries silently |
+| User clicks Disconnect | Shows disconnected state, can manually reconnect if needed |
+| Max retries exceeded (30s) | Shows "Error" or "Disconnected" with option to retry manually |
+
+---
+
 ## Current State
 
 - ✅ WebSocket streaming working
 - ✅ Gemini Live API connected
 - ✅ Audio coaching returns
-- ✅ **Moment detection fully integrated** (Phase 1-5 complete)
-- ✅ Face expressions detected (smile, surprise, wink, good_framing)
-- ✅ Hand gestures recognized (thumbs_up, peace, wave, point)
-- ✅ Body poses detected (arms_up, t_pose, hands_on_hips, lean_in)
+- ✅ Moment detection fully integrated
+- ✅ Face expressions detected
+- ✅ Hand gestures recognized
+- ✅ Body poses detected
 - ✅ Moments sent to Gemini as [SYSTEM EVENT] hints
 - ✅ Gemini calling bookmark_moment + set_overlay tools
+- ✅ **Auto-connect on page load (Solution B implemented)**
 - ✅ MediaPipe models loading correctly
 - ⚠️ Thresholds may need tuning based on real-world testing
 - ❌ Frontend UI for visualizing detected moments

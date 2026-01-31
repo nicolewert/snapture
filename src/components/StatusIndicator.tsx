@@ -40,6 +40,16 @@ export function StatusIndicator({ state, className }: StatusIndicatorProps) {
     const config = stateConfig[state]
     const Icon = config.icon
 
+    // When connected, show minimal green dot only
+    if (state === 'connected') {
+        return (
+            <div className={cn('flex items-center gap-2', className)}>
+                <div className="w-2 h-2 rounded-full bg-[var(--ctp-green)]" title="Connected" />
+            </div>
+        )
+    }
+
+    // For all other states (connecting, error, disconnected), show full indicator with text
     return (
         <div className={cn('flex items-center gap-2', className)}>
             <Icon

@@ -4,7 +4,7 @@ import type { ConnectionState, ServerMessage } from '../lib/websocket'
 import { MediaCapture, AudioPlayer } from '../lib/media'
 
 export function useSnapture() {
-    const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected')
+    const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
     const [isStreaming, setIsStreaming] = useState(false)
     const [lastMessage, setLastMessage] = useState<ServerMessage | null>(null)
     const [transcript, setTranscript] = useState<string[]>([])
@@ -12,9 +12,42 @@ export function useSnapture() {
     const mediaCapture = useRef<MediaCapture>(new MediaCapture())
     const audioPlayer = useRef<AudioPlayer>(new AudioPlayer())
     const videoRef = useRef<HTMLVideoElement | null>(null)
+    const reconnectAttemptsRef = useRef(0)
+    const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+    // Auto-connect on mount
     useEffect(() => {
-        const unsubState = wsClient.onStateChange(setConnectionState)
+        const autoConnect = async () => {
+            try {
+                await wsClient.connect()
+                wsClient.sendSetup('gemini-2.5-flash-native-audio-latest')
+                reconnectAttemptsRef.current = 0
+            } catch (error) {
+                console.error('[Snapture] Failed to auto-connect:', error)
+                scheduleReconnect()
+            }
+        }
+
+        const scheduleReconnect = () => {
+            const attempts = reconnectAttemptsRef.current
+            const delayMs = Math.min(1000 * Math.pow(2, attempts), 30000) // exponential backoff, max 30s
+            reconnectAttemptsRef.current = attempts + 1
+
+            console.log(`[Snapture] Scheduling reconnect in ${delayMs}ms (attempt ${attempts + 1})`)
+            reconnectTimeoutRef.current = setTimeout(autoConnect, delayMs)
+        }
+
+        autoConnect()
+
+        const unsubState = wsClient.onStateChange((state) => {
+            setConnectionState(state)
+            // Clear any pending reconnect if we successfully connected
+            if (state === 'connected' && reconnectTimeoutRef.current) {
+                clearTimeout(reconnectTimeoutRef.current)
+                reconnectTimeoutRef.current = null
+            }
+        })
+
         const unsubMessage = wsClient.onMessage((message) => {
             setLastMessage(message)
 
@@ -34,24 +67,33 @@ export function useSnapture() {
             }
         })
 
+        // Handle page unload - disconnect cleanly
+        const handleBeforeUnload = () => {
+            stopStreaming()
+            wsClient.disconnect()
+            console.log('[Snapture] Page unload - disconnected')
+        }
+
+        // Handle tab visibility change
+        const handleVisibilityChange = () => {
+            if (document.hidden) {
+                console.log('[Snapture] Tab hidden - stopping stream')
+                stopStreaming() // Stop streaming but keep connection alive
+            }
+        }
+
+        window.addEventListener('beforeunload', handleBeforeUnload)
+        document.addEventListener('visibilitychange', handleVisibilityChange)
+
         return () => {
             unsubState()
             unsubMessage()
+            if (reconnectTimeoutRef.current) {
+                clearTimeout(reconnectTimeoutRef.current)
+            }
+            window.removeEventListener('beforeunload', handleBeforeUnload)
+            document.removeEventListener('visibilitychange', handleVisibilityChange)
         }
-    }, [])
-
-    const connect = useCallback(async () => {
-        try {
-            await wsClient.connect()
-            wsClient.sendSetup('gemini-2.5-flash-native-audio-latest')
-        } catch (error) {
-            console.error('[Snapture] Failed to connect:', error)
-        }
-    }, [])
-
-    const disconnect = useCallback(() => {
-        stopStreaming()
-        wsClient.disconnect()
     }, [])
 
     const startStreaming = useCallback(async (video: HTMLVideoElement) => {
@@ -94,8 +136,6 @@ export function useSnapture() {
         isStreaming,
         lastMessage,
         transcript,
-        connect,
-        disconnect,
         startStreaming,
         stopStreaming,
         clearTranscript,

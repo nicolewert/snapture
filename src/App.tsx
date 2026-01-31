@@ -11,8 +11,6 @@ function App() {
     connectionState,
     isStreaming,
     transcript,
-    connect,
-    disconnect,
     startStreaming,
     stopStreaming,
   } = useSnapture()
@@ -54,8 +52,6 @@ function App() {
           <Controls
             connectionState={connectionState}
             isStreaming={isStreaming}
-            onConnect={connect}
-            onDisconnect={disconnect}
             onStartStreaming={handleStartStreaming}
             onStopStreaming={stopStreaming}
             className="justify-center"
