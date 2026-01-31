@@ -615,7 +615,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount clips directory (read-only)
+# Ensure clips directory exists, then mount it (read-only)
+os.makedirs("clips", exist_ok=True)
 app.mount("/clips", StaticFiles(directory="clips"), name="clips")
 
 
