@@ -110,7 +110,7 @@ export class WebSocketClient {
         }
     }
 
-    sendSetup(model: string = 'gemini-2.5-flash-native-audio-latest') {
+    sendSetup(model: string = 'gemini-2.0-flash-live-001') {
         this.send({ type: 'setup', config: { model } })
     }
 

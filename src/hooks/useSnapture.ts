@@ -110,6 +110,10 @@ export function useSnapture() {
         videoRef.current = video
 
         try {
+            // Initialize audio player early (requires user gesture)
+            await audioPlayer.current.init()
+            console.log('[Snapture] Audio player initialized')
+            
             const stream = await mediaCapture.current.start({
                 video: true,
                 audio: true,

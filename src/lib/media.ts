@@ -215,15 +215,31 @@ export class AudioPlayer {
     private currentSource: AudioBufferSourceNode | null = null
 
     async init() {
+        if (this.audioContext) {
+            // Resume if suspended (common after page load without user interaction)
+            if (this.audioContext.state === 'suspended') {
+                await this.audioContext.resume()
+                console.log('[AudioPlayer] Resumed suspended audio context')
+            }
+            return
+        }
         this.audioContext = new AudioContext({ sampleRate: 24000 }) // Gemini outputs 24kHz
+        console.log('[AudioPlayer] Initialized audio context, state:', this.audioContext.state)
     }
 
     async playAudio(base64Data: string) {
         if (!this.audioContext) await this.init()
+        
+        // Ensure context is running (may be suspended on first interaction)
+        if (this.audioContext!.state === 'suspended') {
+            await this.audioContext!.resume()
+        }
 
         const pcmData = this.base64ToInt16Array(base64Data)
         const floatData = this.int16ToFloat32(pcmData)
 
+        console.log('[AudioPlayer] Received audio chunk:', pcmData.length, 'samples')
+        
         const audioBuffer = this.audioContext!.createBuffer(1, floatData.length, 24000)
         audioBuffer.getChannelData(0).set(floatData)
 

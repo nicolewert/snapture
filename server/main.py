@@ -137,6 +137,10 @@ class ClientSession:
 
             await self.gemini_client.connect()
             logger.info(f"Session {self.session_id}: Gemini connected")
+            
+            # Send initial greeting to prompt Gemini to introduce itself
+            await self.gemini_client.send_greeting()
+            
             return True
 
         except Exception as e:
@@ -156,7 +160,9 @@ class ClientSession:
 
         elif msg_type == "audio":
             if self.gemini_client:
-                await self.gemini_client.send_audio(message.get("data", ""))
+                audio_data = message.get("data", "")
+                if audio_data:
+                    await self.gemini_client.send_audio(audio_data)
 
         elif msg_type == "video":
             frame_b64 = message.get("data", "")
@@ -412,10 +418,13 @@ class ClientSession:
 
     async def send_audio(self, data: str):
         """Send audio data to client."""
+        logger.debug(f"Session {self.session_id}: Sending audio to client: {len(data)} chars")
         await self._send({"type": "audio", "data": data})
 
     async def send_text(self, content: str):
         """Send text content to client."""
+        logger.info(f"Session {self.session_id}: Sending text to client: {content[:100]}...")
+        
         # Handle dynamic clipping triggers
         if "[START_CLIP]" in content and self.recording_start_time:
             current_time = time.time() - self.recording_start_time
