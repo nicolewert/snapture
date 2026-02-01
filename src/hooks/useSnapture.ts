@@ -56,9 +56,11 @@ export function useSnapture() {
 
             switch (message.type) {
                 case 'audio':
+                    console.log('[Snapture] Received audio from Gemini, playing...')
                     audioPlayer.current.playAudio(message.data)
                     break
                 case 'text':
+                    console.log('[Snapture] Received text:', message.content)
                     setTranscript(prev => [...prev, message.content])
                     break
                 case 'clip':
@@ -110,10 +112,6 @@ export function useSnapture() {
         videoRef.current = video
 
         try {
-            // Initialize audio player early (requires user gesture)
-            await audioPlayer.current.init()
-            console.log('[Snapture] Audio player initialized')
-            
             const stream = await mediaCapture.current.start({
                 video: true,
                 audio: true,

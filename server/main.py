@@ -82,6 +82,9 @@ class ClientSession:
         self.active_clip_start: float | None = None
         self.bookmarks: list = []
         
+        # Audio tracking
+        self.audio_chunks_received = 0
+        
         # State tracking for debouncing - INDEPENDENT timers per type
         self.last_gesture = None
         self.last_gesture_time = 0
@@ -134,13 +137,14 @@ class ClientSession:
             self.gemini_client.on_overlay = lambda text, kind, duration: asyncio.create_task(
                 self.send_overlay(text, kind, duration)
             )
+            
+            # Reconnect on disconnect
+            self.gemini_client.on_disconnected = lambda: asyncio.create_task(
+                self._handle_gemini_disconnect(model)
+            )
 
             await self.gemini_client.connect()
             logger.info(f"Session {self.session_id}: Gemini connected")
-            
-            # Send initial greeting to prompt Gemini to introduce itself
-            await self.gemini_client.send_greeting()
-            
             return True
 
         except Exception as e:
@@ -148,21 +152,45 @@ class ClientSession:
             await self.send_error(f"Failed to connect to Gemini: {str(e)}")
             return False
 
+    async def _handle_gemini_disconnect(self, model: str):
+        """Handle Gemini disconnection and attempt to reconnect."""
+        logger.warning(f"Session {self.session_id}: Gemini disconnected, attempting reconnect...")
+        try:
+            # Clean up old client
+            if self.gemini_client:
+                try:
+                    await self.gemini_client.disconnect()
+                except:
+                    pass
+            
+            # Wait a moment before reconnecting
+            await asyncio.sleep(1)
+            
+            # Reconnect
+            if await self.setup_gemini(model):
+                logger.info(f"Session {self.session_id}: Gemini reconnected successfully")
+            else:
+                logger.error(f"Session {self.session_id}: Failed to reconnect to Gemini")
+        except Exception as e:
+            logger.error(f"Session {self.session_id}: Error during reconnect: {e}")
+
     async def handle_message(self, message: dict):
         """Process incoming message from client."""
         msg_type = message.get("type")
 
         if msg_type == "setup":
             config = message.get("config", {})
-            model = config.get("model", "gemini-2.0-flash-live-001")
+            model = config.get("model", "gemini-2.5-flash-native-audio-latest")
             if await self.setup_gemini(model):
                 await self.send_connected()
 
         elif msg_type == "audio":
             if self.gemini_client:
-                audio_data = message.get("data", "")
-                if audio_data:
-                    await self.gemini_client.send_audio(audio_data)
+                self.audio_chunks_received += 1
+                # Log every 100 chunks (~2-4 seconds of audio)
+                if self.audio_chunks_received % 100 == 0:
+                    logger.info(f"Audio chunks sent to Gemini: {self.audio_chunks_received}")
+                await self.gemini_client.send_audio(message.get("data", ""))
 
         elif msg_type == "video":
             frame_b64 = message.get("data", "")
@@ -418,13 +446,10 @@ class ClientSession:
 
     async def send_audio(self, data: str):
         """Send audio data to client."""
-        logger.debug(f"Session {self.session_id}: Sending audio to client: {len(data)} chars")
         await self._send({"type": "audio", "data": data})
 
     async def send_text(self, content: str):
         """Send text content to client."""
-        logger.info(f"Session {self.session_id}: Sending text to client: {content[:100]}...")
-        
         # Handle dynamic clipping triggers
         if "[START_CLIP]" in content and self.recording_start_time:
             current_time = time.time() - self.recording_start_time

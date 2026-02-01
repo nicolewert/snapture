@@ -66,9 +66,12 @@ export class MediaCapture {
         this.audioProcessor = this.audioContext.createScriptProcessor(bufferSize, 1, 1)
 
         this.audioProcessor.onaudioprocess = (event) => {
+            // Guard against null audioContext (can happen during cleanup)
+            if (!this.audioContext || this.audioContext.state === 'closed') return
+            
             const inputData = event.inputBuffer.getChannelData(0)
             // Resample from source sample rate to 16kHz
-            const resampledData = this.resampleAudio(inputData, this.audioContext!.sampleRate, TARGET_SAMPLE_RATE)
+            const resampledData = this.resampleAudio(inputData, this.audioContext.sampleRate, TARGET_SAMPLE_RATE)
             const pcm16 = this.floatTo16BitPCM(resampledData)
             const base64 = this.arrayBufferToBase64(pcm16.buffer as ArrayBuffer)
             this.onAudioChunk?.(base64)
@@ -215,31 +218,15 @@ export class AudioPlayer {
     private currentSource: AudioBufferSourceNode | null = null
 
     async init() {
-        if (this.audioContext) {
-            // Resume if suspended (common after page load without user interaction)
-            if (this.audioContext.state === 'suspended') {
-                await this.audioContext.resume()
-                console.log('[AudioPlayer] Resumed suspended audio context')
-            }
-            return
-        }
         this.audioContext = new AudioContext({ sampleRate: 24000 }) // Gemini outputs 24kHz
-        console.log('[AudioPlayer] Initialized audio context, state:', this.audioContext.state)
     }
 
     async playAudio(base64Data: string) {
         if (!this.audioContext) await this.init()
-        
-        // Ensure context is running (may be suspended on first interaction)
-        if (this.audioContext!.state === 'suspended') {
-            await this.audioContext!.resume()
-        }
 
         const pcmData = this.base64ToInt16Array(base64Data)
         const floatData = this.int16ToFloat32(pcmData)
 
-        console.log('[AudioPlayer] Received audio chunk:', pcmData.length, 'samples')
-        
         const audioBuffer = this.audioContext!.createBuffer(1, floatData.length, 24000)
         audioBuffer.getChannelData(0).set(floatData)
 

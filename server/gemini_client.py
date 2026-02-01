@@ -22,27 +22,75 @@ logger = logging.getLogger(__name__)
 class GeminiLiveClient:
     """Wrapper for Gemini Live API WebSocket communication."""
 
-    def __init__(self, api_key: str, model: str = "gemini-3-pro-preview"):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-native-audio-latest"):
         self.api_key = api_key
         self.model = model
         self.client = genai.Client(api_key=api_key)
         self.session: Optional[Any] = None
-        self._session_ctx: Optional[Any] = None
         self.on_audio: Optional[Callable[[str], None]] = None
         self.on_text: Optional[Callable[[str], None]] = None
         self.on_interrupted: Optional[Callable[[], None]] = None
         self.on_turn_complete: Optional[Callable[[], None]] = None
+        self.on_disconnected: Optional[Callable[[], None]] = None
         self._receive_task: Optional[asyncio.Task] = None
 
     async def connect(self) -> None:
         """Establish connection to Gemini Live API."""
         logger.info(f"Connecting to Gemini Live API with model: {self.model}")
 
-        # Configure the Live API session - start simple without tools to test connection
+        # Define tools
+        tools = [
+            {
+                "function_declarations": [
+                    {
+                        "name": "bookmark_moment",
+                        "description": "Bookmark a specific moment in the video recording when something interesting happens or when the user does something well.",
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "label": {
+                                    "type": "STRING", 
+                                    "description": "Label for the bookmark (e.g., 'Great Smile', 'Good Delivery')"
+                                },
+                                "confidence": {
+                                    "type": "NUMBER",
+                                    "description": "Confidence score 0.0-1.0"
+                                }
+                            },
+                            "required": ["label"]
+                        }
+                    },
+                    {
+                        "name": "set_overlay",
+                        "description": "Trigger a visual overlay on the user's screen to provide feedback or direction.",
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "text": {
+                                    "type": "STRING",
+                                    "description": "Text to display on the overlay"
+                                },
+                                "kind": {
+                                    "type": "STRING",
+                                    "description": "Type of overlay: 'CUT', 'instruction', 'praise'",
+                                    "enum": ["CUT", "instruction", "praise"]
+                                },
+                                "duration": {
+                                    "type": "NUMBER",
+                                    "description": "Duration in seconds to show the overlay"
+                                }
+                            },
+                            "required": ["text"]
+                        }
+                    }
+                ]
+            }
+        ]
+
+        # Configure the Live API session
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
-            # Enable transcription of Gemini's audio output for the transcript panel
-            output_audio_transcription=types.AudioTranscriptionConfig(),
+            tools=tools,
             system_instruction=types.Content(
                 parts=[
                     types.Part(
@@ -55,9 +103,14 @@ Your role:
 - Keep feedback short and actionable (1-2 sentences max).
 - Be enthusiastic and supportive.
 
+Use your tools:
+- If they give a Thumbs Up or nail a line, call `bookmark_moment` to mark that moment as a highlight.
+- If they mess up or you want to give a visual cue, call `set_overlay` to display feedback on their screen.
+
 Example feedback:
 - "Love the energy! Try moving the camera up a bit for better framing."
-- "That was perfect! The lighting and your smile were spot on."
+- "[START_CLIP] Okay, looking good, go for it!"
+- "[END_CLIP] That was perfect! The lighting and your smile were spot on."
 - "Great smile! Maybe slow down just a touch."
 
 Keep your responses conversational and brief since this is real-time coaching."""
@@ -74,10 +127,6 @@ Keep your responses conversational and brief since this is real-time coaching.""
         self._receive_task = asyncio.create_task(self._receive_loop())
         logger.info("Connected to Gemini Live API")
 
-    async def send_greeting(self) -> None:
-        """Send initial greeting to prompt Gemini to introduce itself."""
-        await self.send_text("Hello! A new user just started a video recording session. Please greet them briefly and let them know you're ready to help coach their video.")
-
     async def _receive_loop(self) -> None:
         """Continuously receive and process messages from Gemini."""
         try:
@@ -87,50 +136,32 @@ Keep your responses conversational and brief since this is real-time coaching.""
             logger.info("Receive loop cancelled")
         except Exception as e:
             logger.error(f"Error in receive loop: {e}")
+            # Signal that connection is lost
+            self._session_ctx = None
+            if self.on_disconnected:
+                # Call the callback (it returns a coroutine from asyncio.create_task)
+                self.on_disconnected()
 
     async def _handle_response(self, response: Any) -> None:
         """Process a response from Gemini Live API."""
         try:
-            # Debug: log all response attributes to understand structure
-            logger.debug(f"Response type: {type(response)}, attrs: {[a for a in dir(response) if not a.startswith('_')]}")
-            
             # Handle server content (audio/text responses)
             if hasattr(response, "server_content") and response.server_content:
                 content = response.server_content
-                
-                # Debug: log content attributes
-                logger.debug(f"Content attrs: {[a for a in dir(content) if not a.startswith('_')]}")
 
                 # Check for interruption
                 if hasattr(content, "interrupted") and content.interrupted:
-                    logger.debug("Model was interrupted")
+                    logger.info("Gemini: Model was interrupted")
                     if self.on_interrupted:
                         self.on_interrupted()
                     return
 
                 # Check for turn complete
                 if hasattr(content, "turn_complete") and content.turn_complete:
-                    logger.debug("Turn complete")
+                    logger.info("Gemini: Turn complete")
                     if self.on_turn_complete:
                         self.on_turn_complete()
                     return
-
-                # Check for output audio transcription (from native audio model)
-                # Try multiple possible attribute names
-                transcription = None
-                for attr_name in ['output_transcription', 'transcription', 'output_audio_transcription']:
-                    if hasattr(content, attr_name):
-                        transcription = getattr(content, attr_name)
-                        if transcription:
-                            logger.info(f"Found transcription in '{attr_name}': {transcription}")
-                            break
-                
-                if transcription:
-                    transcript_text = getattr(transcription, 'text', None) or str(transcription)
-                    if transcript_text and transcript_text.strip():
-                        logger.info(f"Received transcription from Gemini: {transcript_text[:100]}...")
-                        if self.on_text:
-                            self.on_text(transcript_text)
 
                 # Process model turn parts
                 if hasattr(content, "model_turn") and content.model_turn:
@@ -142,7 +173,7 @@ Keep your responses conversational and brief since this is real-time coaching.""
                                 audio_b64 = base64.b64encode(audio_data).decode("utf-8")
                             else:
                                 audio_b64 = audio_data
-                            logger.info(f"Received audio from Gemini: {len(audio_b64)} chars")
+                            logger.debug(f"Received audio from Gemini: {len(audio_b64)} chars")
                             if self.on_audio:
                                 self.on_audio(audio_b64)
 
@@ -214,7 +245,6 @@ Keep your responses conversational and brief since this is real-time coaching.""
 
         try:
             audio_bytes = base64.b64decode(audio_b64)
-            logger.debug(f"Sending audio to Gemini: {len(audio_bytes)} bytes")
             await self._session_ctx.send(
                 input=types.LiveClientRealtimeInput(
                     media_chunks=[
@@ -250,7 +280,6 @@ Keep your responses conversational and brief since this is real-time coaching.""
             return
 
         try:
-            logger.info(f"Sending text to Gemini: {text[:100]}...")
             await self._session_ctx.send(input=text, end_of_turn=True)
         except Exception as e:
             logger.error(f"Error sending text: {e}")
